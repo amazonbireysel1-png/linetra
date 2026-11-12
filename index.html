@@ -2007,6 +2007,15 @@ const TIER_RECIPES = Object.freeze({
   expert: { minEdges: 17, maxEdges: 24, oneWay: [1, 4], lattices: [() => squareLattice(4, 5, true), () => squareLattice(5, 5, false), () => triLattice(4, 5), () => triLattice(5, 5), () => wheelLattice(9), () => doubleRingLattice(6), () => doubleRingLattice(7), () => circleLattice(11), () => circleLattice(12)] },
 });
 
+/** Uzman kademesinin ötesindeki "meydan okuma" bölümleri: k büyüdükçe kenar sayısı ve tek yönlü kenarlar artar. */
+function continuedRecipe(k) {
+  const grow = Math.min(Math.floor(k / 4), 14);
+  return {
+    minEdges: 19 + grow, maxEdges: 26 + grow, oneWay: [2, Math.min(4 + Math.floor(k / 12), 7)],
+    lattices: [() => squareLattice(5, 5, true), () => squareLattice(5, 6, false), () => squareLattice(4, 6, true), () => triLattice(5, 5), () => triLattice(5, 6), () => wheelLattice(10), () => wheelLattice(12), () => doubleRingLattice(7), () => doubleRingLattice(8), () => circleLattice(13), () => circleLattice(14)],
+  };
+}
+
 function randomTrail(lattice, targetEdges, rng) {
   let current = rng.int(0, lattice.points.length - 1);
   const used = new Set();
@@ -2066,8 +2075,8 @@ function notDegenerate(level) {
 }
 
 /** Bir zorluk seviyesi için doğrulanmış tek aday üretir; üretemezse null. */
-function generateCandidate(tier, rng, id = `${tier}-candidate`) {
-  const recipe = TIER_RECIPES[tier];
+function generateCandidate(tier, rng, id = `${tier}-candidate`, recipeOverride = null) {
+  const recipe = recipeOverride || TIER_RECIPES[tier];
   if (!recipe) throw new Error(`Bilinmeyen zorluk: ${tier}`);
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const lattice = rng.pick(recipe.lattices)();
@@ -2173,6 +2182,29 @@ function dailyLevel(key = dateKey()) {
     return { id: data.id, tier, graph, startNodes, data, dateKey: key };
   }
   throw new Error(`Günlük bulmaca üretilemedi: ${key}`);
+}
+
+// ---- src/levels/continued.js ----
+// Bütün bölümler bitince devam eden "meydan okuma" bölümleri: sıra numarasından türeyen tohumla üretilir,
+// herkes aynı sırada aynı bölümü görür. Her bölüm çalışma anında şemadan ve çözücüden geçer.
+
+
+
+
+const MORE_SEED_PREFIX = 'linetra-more-v1:';
+const MORE_SEED_RETRIES = 30;
+
+/** @param {number} k 0'dan başlayan sıra; @param {number} firstNumber bu bölümün oyundaki ilk numarası (k=0 için) */
+function continuedLevel(k, firstNumber = 1) {
+  if (!Number.isInteger(k) || k < 0) throw new Error(`Geçersiz sıra: ${k}`);
+  const recipe = continuedRecipe(k);
+  for (let retry = 0; retry < MORE_SEED_RETRIES; retry++) {
+    const data = generateCandidate('expert', createRng(`${MORE_SEED_PREFIX}${k}:${retry}`), `m-${k + 1}`, recipe);
+    if (!data) continue;
+    const { graph, startNodes } = levelToGraph(data);
+    return { id: data.id, tier: 'expert', graph, startNodes, data, index: firstNumber - 1 + k, number: firstNumber + k, extra: k };
+  }
+  throw new Error(`Bölüm üretilemedi: ${k}`);
 }
 
 // ---- src/progress/storage.js ----
@@ -2389,6 +2421,7 @@ function defaultSave() {
     stats: { strokes: 0, hints: 0, undos: 0, playMs: 0, streak: 0, bestStreak: 0, lastDaily: null },
     tips: {},     // öğretici ipucu adı -> true (bir kez gösterildi)
     achievements: {}, // id -> zaman damgası
+    more: 0,      // bütün bölümler bittikten sonra çözülen meydan okuma bölümü sayısı
   };
 }
 
@@ -2438,6 +2471,7 @@ function sanitizeSave(raw) {
     const known = new Set(ACHIEVEMENTS.map((a) => a.id));
     for (const [id, ts] of Object.entries(raw.achievements)) if (known.has(id) && Number.isFinite(ts)) out.achievements[id] = ts;
   }
+  out.more = clampInt(raw.more, 0, 1e6, 0);
   return out;
 }
 
@@ -2532,6 +2566,19 @@ class Progress {
     }
     if (stars > prev) this.data.daily[key] = { stars };
     const result = this._finish(stars, stars > prev, counters);
+    result.newBackgrounds = [];
+    return result;
+  }
+
+  /** Meydan okuma bölümlerinden kaçı çözüldü; sıradaki bölümün sırası da budur. */
+  moreSolved() { return this.data.more; }
+
+  /** k. meydan okuma bölümü çözüldü. Yalnız sıradaki bölüm ilerlemeyi artırır; eskileri tekrar oynamak sayılmaz. */
+  recordMore(k, counters) {
+    const stars = computeStars(counters);
+    const first = k === this.data.more;
+    if (first) this.data.more++;
+    const result = this._finish(stars, first, counters);
     result.newBackgrounds = [];
     return result;
   }
@@ -2965,10 +3012,10 @@ const EN = {
   menuDaily: 'Daily puzzle', menuAwards: 'Achievements', menuPrefs: 'Settings',
   ariaMainMenu: 'Main menu', ariaHome: 'Back to main menu', ariaBack: 'Go back', ariaBoard: 'Puzzle board', ariaCounter: 'Lines drawn',
   toolUndo: 'Undo', toolRestart: 'Restart', toolHint: 'Hint',
-  playStart: 'Start', playContinue: 'Continue', playAllDone: 'All levels solved',
+  playStart: 'Start', playContinue: 'Continue',
   level: 'Level {n}', dailyTitle: 'Daily puzzle',
   dailySolved: 'Solved', dailySolvedStreak: 'Solved · {n} days', dailyStreak: '{n}-day streak', dailyNew: 'New today',
-  tierTutorial: 'Practice', tierShapes: 'Shapes', tierEasy: 'Easy', tierNormal: 'Medium', tierHard: 'Hard', tierExpert: 'Expert',
+  tierTutorial: 'Practice', tierShapes: 'Shapes', tierEasy: 'Easy', tierNormal: 'Medium', tierHard: 'Hard', tierExpert: 'Expert', tierMore: 'Challenge',
   tip1: 'Put your finger on the ringed dot and drag the line to the other dot.',
   tip2: 'Cross every line once. If you lift your finger, you carry on from where you stopped.',
   tip3: 'You cannot cross the same line twice. Went wrong? Drag back.',
@@ -3006,10 +3053,10 @@ const TR = {
   menuDaily: 'Günlük bulmaca', menuAwards: 'Başarımlar', menuPrefs: 'Ayarlar',
   ariaMainMenu: 'Ana menü', ariaHome: 'Ana menüye dön', ariaBack: 'Geri dön', ariaBoard: 'Bulmaca tahtası', ariaCounter: 'Geçilen çizgi',
   toolUndo: 'Geri al', toolRestart: 'Yeniden', toolHint: 'İpucu',
-  playStart: 'Başla', playContinue: 'Devam et', playAllDone: 'Bütün bölümler çözüldü',
+  playStart: 'Başla', playContinue: 'Devam et',
   level: 'Bölüm {n}', dailyTitle: 'Günlük bulmaca',
   dailySolved: 'Çözüldü', dailySolvedStreak: 'Çözüldü · {n} gün', dailyStreak: 'Seri {n} gün', dailyNew: 'Bugün yeni',
-  tierTutorial: 'Alıştırma', tierShapes: 'Şekiller', tierEasy: 'Kolay', tierNormal: 'Orta', tierHard: 'Zor', tierExpert: 'Usta',
+  tierTutorial: 'Alıştırma', tierShapes: 'Şekiller', tierEasy: 'Kolay', tierNormal: 'Orta', tierHard: 'Zor', tierExpert: 'Usta', tierMore: 'Meydan okuma',
   tip1: 'Parmağını halkalı noktaya koy, çizgiyi öbür noktaya sürükle.',
   tip2: 'Bütün çizgilerden bir kez geç. Parmağını kaldırırsan kaldığın yerden sürer.',
   tip3: 'Aynı çizgiden iki kez geçemezsin. Yanlış gittiysen geri sürükle.',
@@ -3047,10 +3094,10 @@ const ES = {
   menuDaily: 'Reto diario', menuAwards: 'Logros', menuPrefs: 'Ajustes',
   ariaMainMenu: 'Menú principal', ariaHome: 'Volver al menú principal', ariaBack: 'Volver', ariaBoard: 'Tablero', ariaCounter: 'Líneas trazadas',
   toolUndo: 'Deshacer', toolRestart: 'Reiniciar', toolHint: 'Pista',
-  playStart: 'Empezar', playContinue: 'Continuar', playAllDone: 'Todos los niveles resueltos',
+  playStart: 'Empezar', playContinue: 'Continuar',
   level: 'Nivel {n}', dailyTitle: 'Reto diario',
   dailySolved: 'Resuelto', dailySolvedStreak: 'Resuelto · {n} días', dailyStreak: 'Racha de {n} días', dailyNew: 'Nuevo hoy',
-  tierTutorial: 'Práctica', tierShapes: 'Formas', tierEasy: 'Fácil', tierNormal: 'Medio', tierHard: 'Difícil', tierExpert: 'Experto',
+  tierTutorial: 'Práctica', tierShapes: 'Formas', tierEasy: 'Fácil', tierNormal: 'Medio', tierHard: 'Difícil', tierExpert: 'Experto', tierMore: 'Desafío',
   tip1: 'Pon el dedo en el punto con anillo y arrastra la línea hasta el otro punto.',
   tip2: 'Pasa por todas las líneas una vez. Si levantas el dedo, sigues donde lo dejaste.',
   tip3: 'No puedes pasar dos veces por la misma línea. ¿Te equivocaste? Arrastra hacia atrás.',
@@ -3088,10 +3135,10 @@ const DE = {
   menuDaily: 'Tagesrätsel', menuAwards: 'Erfolge', menuPrefs: 'Einstellungen',
   ariaMainMenu: 'Hauptmenü', ariaHome: 'Zurück zum Hauptmenü', ariaBack: 'Zurück', ariaBoard: 'Spielfeld', ariaCounter: 'Gezogene Linien',
   toolUndo: 'Zurück', toolRestart: 'Neu', toolHint: 'Tipp',
-  playStart: 'Start', playContinue: 'Weiter', playAllDone: 'Alle Level gelöst',
+  playStart: 'Start', playContinue: 'Weiter',
   level: 'Level {n}', dailyTitle: 'Tagesrätsel',
   dailySolved: 'Gelöst', dailySolvedStreak: 'Gelöst · {n} Tage', dailyStreak: 'Serie: {n} Tage', dailyNew: 'Heute neu',
-  tierTutorial: 'Übung', tierShapes: 'Formen', tierEasy: 'Leicht', tierNormal: 'Mittel', tierHard: 'Schwer', tierExpert: 'Experte',
+  tierTutorial: 'Übung', tierShapes: 'Formen', tierEasy: 'Leicht', tierNormal: 'Mittel', tierHard: 'Schwer', tierExpert: 'Experte', tierMore: 'Herausforderung',
   tip1: 'Lege den Finger auf den Punkt mit Ring und ziehe die Linie zum anderen Punkt.',
   tip2: 'Fahre jede Linie einmal ab. Hebst du den Finger, geht es an derselben Stelle weiter.',
   tip3: 'Keine Linie darf zweimal befahren werden. Falsch gezogen? Zieh zurück.',
@@ -3129,10 +3176,10 @@ const FR = {
   menuDaily: 'Défi du jour', menuAwards: 'Succès', menuPrefs: 'Réglages',
   ariaMainMenu: 'Menu principal', ariaHome: 'Retour au menu principal', ariaBack: 'Retour', ariaBoard: 'Plateau', ariaCounter: 'Lignes tracées',
   toolUndo: 'Annuler', toolRestart: 'Refaire', toolHint: 'Indice',
-  playStart: 'Commencer', playContinue: 'Continuer', playAllDone: 'Tous les niveaux sont résolus',
+  playStart: 'Commencer', playContinue: 'Continuer',
   level: 'Niveau {n}', dailyTitle: 'Défi du jour',
   dailySolved: 'Résolu', dailySolvedStreak: 'Résolu · {n} jours', dailyStreak: 'Série de {n} jours', dailyNew: "Nouveau aujourd'hui",
-  tierTutorial: 'Entraînement', tierShapes: 'Formes', tierEasy: 'Facile', tierNormal: 'Moyen', tierHard: 'Difficile', tierExpert: 'Expert',
+  tierTutorial: 'Entraînement', tierShapes: 'Formes', tierEasy: 'Facile', tierNormal: 'Moyen', tierHard: 'Difficile', tierExpert: 'Expert', tierMore: 'Défi',
   tip1: "Pose le doigt sur le point cerclé et fais glisser le trait jusqu'à l'autre point.",
   tip2: "Passe une fois sur chaque ligne. Si tu lèves le doigt, tu reprends où tu t'es arrêté.",
   tip3: 'Impossible de passer deux fois sur la même ligne. Une erreur ? Reviens en arrière.',
@@ -3170,10 +3217,10 @@ const PT = {
   menuDaily: 'Desafio diário', menuAwards: 'Conquistas', menuPrefs: 'Ajustes',
   ariaMainMenu: 'Menu principal', ariaHome: 'Voltar ao menu principal', ariaBack: 'Voltar', ariaBoard: 'Tabuleiro', ariaCounter: 'Linhas traçadas',
   toolUndo: 'Desfazer', toolRestart: 'Reiniciar', toolHint: 'Dica',
-  playStart: 'Começar', playContinue: 'Continuar', playAllDone: 'Todos os níveis resolvidos',
+  playStart: 'Começar', playContinue: 'Continuar',
   level: 'Nível {n}', dailyTitle: 'Desafio diário',
   dailySolved: 'Resolvido', dailySolvedStreak: 'Resolvido · {n} dias', dailyStreak: 'Sequência de {n} dias', dailyNew: 'Novo hoje',
-  tierTutorial: 'Treino', tierShapes: 'Formas', tierEasy: 'Fácil', tierNormal: 'Médio', tierHard: 'Difícil', tierExpert: 'Mestre',
+  tierTutorial: 'Treino', tierShapes: 'Formas', tierEasy: 'Fácil', tierNormal: 'Médio', tierHard: 'Difícil', tierExpert: 'Mestre', tierMore: 'Desafio',
   tip1: 'Ponha o dedo no ponto com anel e arraste a linha até o outro ponto.',
   tip2: 'Passe por todas as linhas uma vez. Se levantar o dedo, continua de onde parou.',
   tip3: 'Não dá para passar duas vezes pela mesma linha. Errou? Arraste de volta.',
@@ -3208,7 +3255,7 @@ const PT = {
 };
 const LOCALES = Object.freeze({ en: EN, tr: TR, es: ES, de: DE, fr: FR, pt: PT });
 /** Anahtar eşlemeleri (veri kimliği → metin anahtarı). */
-const TIER_KEYS = Object.freeze({ tutorial: 'tierTutorial', shapes: 'tierShapes', easy: 'tierEasy', normal: 'tierNormal', hard: 'tierHard', expert: 'tierExpert' });
+const TIER_KEYS = Object.freeze({ tutorial: 'tierTutorial', shapes: 'tierShapes', easy: 'tierEasy', normal: 'tierNormal', hard: 'tierHard', expert: 'tierExpert', more: 'tierMore' });
 const TIP_KEYS = Object.freeze({ 't-01': 'tip1', 't-02': 'tip2', 't-03': 'tip3', 't-04': 'tip4', 't-05': 'tip5', 't-06': 'tip6', 't-07': 'tip7', 't-08': 'tip8', 't-09': 'tip9' });
 const REASON_KEYS = Object.freeze({ 'edge-used': 'statusEdgeUsed', 'wrong-direction': 'statusWrongDirection', 'wrong-start': 'statusWrongStart' });
 const ACHIEVEMENT_KEYS = Object.freeze({
@@ -3238,6 +3285,7 @@ function createTranslator(lang) {
 
 // ---- src/ui/app.js ----
 // Uygulama bileşimi: ekranlar, yönlendirme ve oyun akışı. Kurallar core/, çizim render/ içindedir.
+
 
 
 
@@ -3364,7 +3412,7 @@ function startApp(hotData = {}) {
   function applyRoute() {
     const screen = ROUTES[route] || 'home';
     if (screen !== 'game') { commitPlayTime(true); hideSheet(); }
-    if (route === 'play' && !(game && game.mode === 'campaign' && !game.won)) { if (!openCampaign(progress.nextLevelIndex())) { route = 'home'; return applyRoute(); } }
+    if (route === 'play' && !(game && (game.mode === 'campaign' || game.mode === 'more') && !game.won)) { if (!openCurrent()) { route = 'home'; return applyRoute(); } }
     if (route === 'daily' && !(game && game.mode === 'daily' && !game.won)) { if (!openDaily()) { route = 'home'; return applyRoute(); } }
     for (const s of SCREENS) byId(`screen-${s}`).hidden = s !== screen;
     if (screen === 'home') renderHome();
@@ -3395,6 +3443,20 @@ function startApp(hotData = {}) {
   function openCampaign(index) {
     try { openLevel(catalog.load(index), 'campaign'); return true; } catch (err) {
       console.error('[linetra] bölüm açılamadı', err);
+      toast(t('toastLevelFail'));
+      return false;
+    }
+  }
+
+  /** Sıradaki oynanacak bölümü açar: bölümler bittiyse sıradaki meydan okuma bölümünü. */
+  function openCurrent() {
+    const sum = progress.summary();
+    return sum.solved >= sum.total ? openMore(progress.moreSolved()) : openCampaign(progress.nextLevelIndex());
+  }
+
+  function openMore(k) {
+    try { openLevel(continuedLevel(k, catalog.count + 1), 'more'); return true; } catch (err) {
+      console.error('[linetra] meydan okuma bölümü üretilemedi', err);
       toast(t('toastLevelFail'));
       return false;
     }
@@ -3439,7 +3501,7 @@ function startApp(hotData = {}) {
 
   function renderGame() {
     if (!game) return;
-    byId('game-tier').textContent = game.mode === 'daily' ? formatDateKey(game.level.dateKey) : tierName(game.level.tier);
+    byId('game-tier').textContent = game.mode === 'daily' ? formatDateKey(game.level.dateKey) : (game.mode === 'more' ? tierName('more') : tierName(game.level.tier));
     byId('game-title').textContent = levelLabel();
     const intro = oneWayIntro();
     setTip(intro ? t('tipOneWay') : defaultTip());
@@ -3491,7 +3553,8 @@ function startApp(hotData = {}) {
     boardRenderer.notifyWin();
     audio.win(); haptic([12, 30, 12, 30, 30]);
     const counters = { ...game.session.counters, hints: game.hints };
-    const result = game.mode === 'daily' ? progress.recordDaily(game.level.dateKey, counters) : progress.recordLevel(game.level.id, counters);
+    const result = game.mode === 'daily' ? progress.recordDaily(game.level.dateKey, counters)
+      : (game.mode === 'more' ? progress.recordMore(game.level.extra, counters) : progress.recordLevel(game.level.id, counters));
     if (!result.saved && !saveWarned) { saveWarned = true; toast(t('toastSaveFail')); }
     setTip('');
     const won = game;
@@ -3521,8 +3584,7 @@ function startApp(hotData = {}) {
     awards.hidden = news.length === 0;
     awards.textContent = news.join(' · ');
     const next = byId('win-next');
-    const hasNext = game.mode === 'campaign' && catalog.has(game.level.index + 1);
-    next.textContent = game.mode === 'daily' ? t('winHome') : (hasNext ? t('winNext') : t('winHome'));
+    next.textContent = game.mode === 'daily' ? t('winHome') : t('winNext');
     byId('win-sheet').hidden = false;
     next.focus({ preventScroll: true });
   }
@@ -3538,8 +3600,9 @@ function startApp(hotData = {}) {
   function nextAfterWin() {
     if (!game) return go('home');
     if (game.mode === 'daily') return go('home');
+    if (game.mode === 'more') { if (openMore(game.level.extra + 1)) renderGame(); return undefined; }
     const nextIndex = game.level.index + 1;
-    if (!catalog.has(nextIndex)) return go('home');
+    if (!catalog.has(nextIndex)) { if (openMore(progress.moreSolved())) renderGame(); return undefined; }
     if (openCampaign(nextIndex)) renderGame();
     return undefined;
   }
@@ -3559,8 +3622,8 @@ function startApp(hotData = {}) {
     const nextIndex = progress.nextLevelIndex();
     const allDone = sum.solved >= sum.total;
     const nextData = catalog.data(nextIndex);
-    byId('home-play-title').textContent = sum.solved === 0 ? t('playStart') : (allDone ? t('winReplay') : t('playContinue'));
-    byId('home-play-sub').textContent = allDone ? t('playAllDone') : `${t('level', { n: nextIndex + 1 })} · ${tierName(nextData.tier)}`;
+    byId('home-play-title').textContent = sum.solved === 0 ? t('playStart') : t('playContinue');
+    byId('home-play-sub').textContent = allDone ? `${t('level', { n: catalog.count + progress.moreSolved() + 1 })} · ${tierName('more')}` : `${t('level', { n: nextIndex + 1 })} · ${tierName(nextData.tier)}`;
     const today = dateKey();
     const dailyMeta = byId('home-daily-meta');
     const streak = progress.currentStreak(today);
@@ -3737,8 +3800,7 @@ function startApp(hotData = {}) {
   for (const btn of document.querySelectorAll('[data-go]')) btn.addEventListener('click', () => { audio.tap(); go(btn.getAttribute('data-go')); });
   byId('home-play').addEventListener('click', () => {
     audio.tap();
-    const sum = progress.summary();
-    if (openCampaign(sum.solved >= sum.total ? catalog.count - 1 : progress.nextLevelIndex())) go('play');
+    if (openCurrent()) go('play');
     return undefined;
   });
   byId('game-back').addEventListener('click', () => { audio.tap(); go('home'); });
@@ -3801,7 +3863,7 @@ function startApp(hotData = {}) {
   return {
     // Test ve canlı güncelleme için dar bir pencere.
     snapshot: () => (game && game.mode === 'campaign' && !game.won ? { game: { index: game.level.index, path: game.session.path.slice(), hints: game.hints } } : {}),
-    debug: { openLevel(i) { return openCampaign(i) && (go('play'), true); }, setLiftPolicy(p) { window.__linetraLiftPolicy = p; }, get game() { return game; }, get background() { return currentBackground.id; }, get lang() { return lang; }, stroke, solve: () => (game ? findSolution(game.level.graph, { startNodes: game.level.startNodes }) : null), boardRenderer, demoRenderer, progress, catalog, go, get route() { return route; } },
+    debug: { openMore(k) { return openMore(k) && (go('play'), true); }, openLevel(i) { return openCampaign(i) && (go('play'), true); }, setLiftPolicy(p) { window.__linetraLiftPolicy = p; }, get game() { return game; }, get background() { return currentBackground.id; }, get lang() { return lang; }, stroke, solve: () => (game ? findSolution(game.level.graph, { startNodes: game.level.startNodes }) : null), boardRenderer, demoRenderer, progress, catalog, go, get route() { return route; } },
   };
 }
 
