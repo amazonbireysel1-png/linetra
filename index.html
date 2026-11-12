@@ -998,8 +998,178 @@ const FIGURES_BY_DIFFICULTY = [
 ];
 
 // Oyuncu sırası: köşeli ve yuvarlak şekiller dönüşümlü gelir; ilk yuvarlak şekil 2. şekildedir.
-const PLAY_ORDER = ['f-07', 'f-03', 'f-02', 'f-09', 'f-11', 'f-08', 'f-12', 'f-15', 'f-06', 'f-10', 'f-13', 'f-05', 'f-04', 'f-01', 'f-14'];
-const FIGURE_LEVELS = PLAY_ORDER.map((id) => FIGURES_BY_DIFFICULTY.find((f) => f.id === id));
+// Her şekil puanına uygun kademeye yerleşir: [kademe, kademe içindeki göreli konum 0..1] (puanlara göre hesaplanmıştır).
+const PLACEMENT = {
+  'f-07': ['easy', 0.05], 'f-03': ['easy', 0.175], 'f-02': ['easy', 0.375], 'f-09': ['easy', 0.425], 'f-11': ['easy', 0.65], 'f-08': ['easy', 0.67],
+  'f-12': ['easy', 0.69], 'f-15': ['easy', 0.71], 'f-06': ['easy', 0.74], 'f-10': ['easy', 0.78], 'f-13': ['easy', 0.9],
+  'f-05': ['normal', 0.27], 'f-04': ['normal', 0.32], 'f-01': ['normal', 0.74], 'f-14': ['hard', 0.13],
+};
+const FIGURE_LEVELS = FIGURES_BY_DIFFICULTY.map((f) => ({ ...f, tier: PLACEMENT[f.id][0], slot: PLACEMENT[f.id][1] }));
+
+// ---- src/data/figures2.js ----
+// Ek şekil bölümleri: gerçek nesneler (ev, anahtar, kelebek, çan...). Elle tasarlanmıştır; her şeklin Euler yolu vardır.
+// Kenar: [adA, adB, araNoktalar?]; koordinatlar birimsizdir (y aşağı).
+
+const r3 = (v) => Math.round(v * 1000) / 1000;
+function pol(cx, cy, r, deg) { const a = (deg * Math.PI) / 180; return [r3(cx + r * Math.cos(a)), r3(cy + r * Math.sin(a))]; }
+function arc(cx, cy, r, degs) { return degs.map((d) => pol(cx, cy, r, d)); }
+/** Ayna: x eksenine göre yansıtılmış nokta listesi. */
+const mir = (cx, pts) => pts.map(([x, y]) => [r3(2 * cx - x), y]);
+
+function shape(id, nodeMap, edgeList) {
+  const names = Object.keys(nodeMap);
+  const index = new Map(names.map((n, i) => [n, i]));
+  const edges = edgeList.map(([a, b, via]) => {
+    const ai = index.get(a); const bi = index.get(b);
+    if (ai === undefined || bi === undefined) throw new Error(`${id}: tanımsız düğüm ${a}/${b}`);
+    return via && via.length ? [ai, bi, 0, 0, via] : [ai, bi];
+  });
+  return { id, tier: 'shapes', nodes: names.map((n) => nodeMap[n]), edges };
+}
+
+// Ev: çatı, baca, kapı. Çatının tabanı yok (saçak kısa çizgiler).
+const house = shape('g-house', {
+  P: [5, 0], RL: [0, 3.8], RR: [10, 3.8], WL: [1.4, 4.9], WR: [8.6, 4.9], BL: [1.4, 9], BR: [8.6, 9],
+  D1: [4, 9], D2: [6, 9], T1: [4, 6], T2: [6, 6], Q1: [7, 1.52], Q2: [8.4, 2.58], C1: [7, 0.2], C2: [8.4, 0.2],
+}, [['P', 'RL'], ['RL', 'WL'], ['WL', 'BL'], ['BL', 'D1'], ['D1', 'T1'], ['T1', 'T2'], ['T2', 'D2'], ['D2', 'BR'], ['BR', 'WR'], ['WR', 'RR'],
+  ['RR', 'Q2'], ['Q2', 'Q1'], ['Q1', 'P'], ['Q1', 'C1'], ['C1', 'C2'], ['C2', 'Q2']]);
+
+// Anahtar: halka ve dişli gövde (kapalı bir kontur).
+const keyC = [2.6, 2.6]; const keyR = 2.4;
+const key = shape('g-key', {
+  Ra: pol(keyC[0], keyC[1], keyR, -18), Rb: pol(keyC[0], keyC[1], keyR, 18), Rl: pol(keyC[0], keyC[1], keyR, 180), Rt: pol(keyC[0], keyC[1], keyR, -90), Rm: pol(keyC[0], keyC[1], keyR, 90),
+  E1: [10, 2.0], E2: [10, 3.2], K1: [9.0, 3.2], K2: [9.0, 4.6], K3: [7.9, 4.6], K4: [7.9, 3.2], K5: [6.9, 3.2], K6: [6.9, 4.2], K7: [5.9, 4.2], K8: [5.9, 3.2],
+}, [['Ra', 'E1'], ['E1', 'E2'], ['E2', 'K1'], ['K1', 'K2'], ['K2', 'K3'], ['K3', 'K4'], ['K4', 'K5'], ['K5', 'K6'], ['K6', 'K7'], ['K7', 'K8'], ['K8', 'Rb'],
+  ['Ra', 'Rt', arc(keyC[0], keyC[1], keyR, [-35, -52, -70])], ['Rt', 'Rl', arc(keyC[0], keyC[1], keyR, [-110, -135, -160])], ['Rl', 'Rm', arc(keyC[0], keyC[1], keyR, [160, 135, 110])], ['Rm', 'Rb', arc(keyC[0], keyC[1], keyR, [70, 52, 35])]]);
+
+// Kelebek: gövde ve dört kanat (her kanat gövdenin ortasından çıkan bir halka).
+const bw = { M: [5, 5], T: [5, 2], B: [5, 8.6] };
+const wingNodes = {
+  UT: [9.4, 0.8], UO: [9.8, 3.8], LA: [8.8, 6.4], LB: [7.2, 9.0],
+  uT: [0.6, 0.8], uO: [0.2, 3.8], lA: [1.2, 6.4], lB: [2.8, 9.0],
+};
+const butterfly = shape('g-butterfly', { ...bw, ...wingNodes }, [
+  ['T', 'M'], ['M', 'B'],
+  ['M', 'UT', [[7.2, 2.2]]], ['UT', 'UO', [[10.1, 2.2]]], ['UO', 'M', [[7.6, 4.6]]],
+  ['M', 'LA', [[7.2, 5.9]]], ['LA', 'LB', [[8.6, 8.2]]], ['LB', 'M', [[6.0, 7.2]]],
+  ['M', 'uT', mir(5, [[7.2, 2.2]])], ['uT', 'uO', mir(5, [[10.1, 2.2]])], ['uO', 'M', mir(5, [[7.6, 4.6]])],
+  ['M', 'lA', mir(5, [[7.2, 5.9]])], ['lA', 'lB', mir(5, [[8.6, 8.2]])], ['lB', 'M', mir(5, [[6.0, 7.2]])],
+]);
+
+// Çan: kubbe, kenar, çan dili ve tepede halka.
+const bell = shape('g-bell', {
+  D: [5, 1.2], FL: [0.8, 7.2], FR: [9.2, 7.2], Cl: [3.8, 7.2], Cr: [6.2, 7.2], Cb: [5, 9.4],
+  Ra: [5, -0.9], Rl: [4.1, 0], Rr: [5.9, 0],
+}, [['D', 'FL', [[2.9, 1.6], [1.7, 3.6], [1.9, 5.8]]], ['D', 'FR', mir(5, [[2.9, 1.6], [1.7, 3.6], [1.9, 5.8]])],
+  ['FL', 'Cl'], ['Cl', 'Cr'], ['Cr', 'FR'], ['Cl', 'Cb', [[4.0, 8.8]]], ['Cb', 'Cr', [[6.0, 8.8]]],
+  ['D', 'Rl'], ['Rl', 'Ra', [[4.2, -0.6]]], ['Ra', 'Rr', [[5.8, -0.6]]], ['Rr', 'D']]);
+
+// Mantar: kubbe şapka, gövde ve üç benek.
+const cap = (d) => pol(5, 5, 4.8, d);
+const mushroom = shape('g-mushroom', {
+  CL: [0.2, 5], CR: [9.8, 5], S1: [3.7, 5], S2: [6.3, 5], B1: [3.5, 9.4], B2: [6.5, 9.4],
+  Q1: cap(-140), QT: cap(-90), Q2: cap(-40),
+  a1: [2.7, 3.6], a2: [3.7, 2.7], b1: [4.2, 2.0], b2: [5.8, 2.0], c1: [7.3, 3.6], c2: [6.3, 2.7],
+}, [['CL', 'Q1', arc(5, 5, 4.8, [-170, -155])], ['Q1', 'QT', arc(5, 5, 4.8, [-120, -105])], ['QT', 'Q2', arc(5, 5, 4.8, [-75, -60])], ['Q2', 'CR', arc(5, 5, 4.8, [-25, -10])],
+  ['CL', 'S1'], ['S1', 'S2'], ['S2', 'CR'], ['S1', 'B1'], ['B1', 'B2'], ['B2', 'S2'],
+  ['Q1', 'a1'], ['a1', 'a2'], ['a2', 'Q1'], ['QT', 'b1'], ['b1', 'b2'], ['b2', 'QT'], ['Q2', 'c1'], ['c1', 'c2'], ['c2', 'Q2']]);
+
+// Bulut ve yıldırım: yıldırım, bulutun alt çizgisindeki bir düğüme bağlı kapalı çokgendir.
+const cloud = shape('g-cloud', {
+  C0: [1.0, 6.0], C1: [1.8, 3.8], C2: [4.2, 1.2], C3: [6.8, 1.8], C4: [8.4, 3.3], C5: [9.4, 5.0], C6: [8.4, 6.0],
+  Z1: [6.4, 6.0], Z2: [3.6, 9.0], Z3: [5.2, 9.0], Z4: [4.4, 11.8], Z5: [8.2, 7.6], Z6: [6.6, 7.6],
+}, [['C0', 'C1', [[0.7, 4.9]]], ['C1', 'C2', [[2.2, 2.4], [3.1, 1.5]]], ['C2', 'C3', [[5.4, 0.7]]], ['C3', 'C4', [[7.8, 2.3]]],
+  ['C4', 'C5', [[9.1, 3.9]]], ['C5', 'C6', [[9.8, 5.8]]], ['C6', 'Z1'], ['Z1', 'C0'],
+  ['Z1', 'Z2'], ['Z2', 'Z3'], ['Z3', 'Z4'], ['Z4', 'Z5'], ['Z5', 'Z6'], ['Z6', 'Z1']]);
+
+// Güneş: daire ve sekiz üçgen ışın.
+const sunNodes = {}; const sunEdges = [];
+for (let k = 0; k < 8; k++) {
+  const a = -90 + 45 * k;
+  sunNodes[`s${k}`] = pol(5, 5, 2.4, a);
+  sunNodes[`r${k}a`] = pol(5, 5, 3.4, a - 10);
+  sunNodes[`r${k}t`] = pol(5, 5, 5.2, a);
+  sunNodes[`r${k}b`] = pol(5, 5, 3.4, a + 10);
+  sunEdges.push([`s${k}`, `s${(k + 1) % 8}`, arc(5, 5, 2.4, [a + 22.5])]);
+  sunEdges.push([`s${k}`, `r${k}a`], [`r${k}a`, `r${k}t`], [`r${k}t`, `r${k}b`], [`r${k}b`, `s${k}`]);
+}
+const sun = shape('g-sun', sunNodes, sunEdges);
+
+// Dondurma: kase, damlayan alt kenar, külah ve kiraz.
+const sc = (d) => pol(5, 4.0, 3.6, d);
+const iceCream = shape('g-icecream', {
+  CL: sc(155), CR: sc(25), T: sc(270), Tip: [5, 11.6], W1: [3.4, 8.4], W2: [6.6, 8.4],
+  Ch1: [3.8, -1.2], Ch2: [5, -2.6], Ch3: [6.2, -1.2],
+}, [['CL', 'T', arc(5, 4.0, 3.6, [185, 215, 245])], ['T', 'CR', arc(5, 4.0, 3.6, [295, 325, 355])],
+  ['CL', 'W1'], ['W1', 'Tip'], ['Tip', 'W2'], ['W2', 'CR'],
+  ['CL', 'CR', [[2.5, 6.6], [3.3, 5.5], [4.1, 6.9], [5.0, 5.7], [5.9, 6.7], [6.6, 5.5], [7.4, 6.6]]],
+  ['T', 'Ch1', [[4.2, -0.2]]], ['Ch1', 'Ch2', [[4.1, -2.2]]], ['Ch2', 'Ch3', [[5.9, -2.2]]], ['Ch3', 'T', [[5.8, -0.2]]]]);
+
+// Uğur böceği: gövde, orta çizgi, baş ve benekler.
+const ladyArc = (a, b) => arc(5, 5.6, 4.0, [a, b]);
+const ladybug = shape('g-ladybug', {
+  T: [5, 1.6], B: [5, 9.6], L: [1, 5.6], R: [9, 5.6],
+  Q1: pol(5, 5.6, 4.0, 215), Q2: pol(5, 5.6, 4.0, 325),
+  a1: [2.7, 4.9], a2: [3.5, 3.4], c1: [7.3, 4.9], c2: [6.5, 3.4],
+  Ha: [3.7, 0.7], Hm: [5, -0.7], Hb: [6.3, 0.7],
+}, [['T', 'Q1', ladyArc(260, 238)], ['Q1', 'L', ladyArc(200, 190)], ['L', 'B', ladyArc(150, 120)], ['B', 'R', ladyArc(60, 30)], ['R', 'Q2', ladyArc(-10, -20)], ['Q2', 'T', ladyArc(-40, -62)],
+  ['T', 'B'],
+  ['Q1', 'a1'], ['a1', 'a2'], ['a2', 'Q1'], ['Q2', 'c1'], ['c1', 'c2'], ['c2', 'Q2'],
+  ['T', 'Ha'], ['Ha', 'Hm', [[4.1, -0.3]]], ['Hm', 'Hb', [[5.9, -0.3]]], ['Hb', 'T']]);
+
+// Kum saati: iki çanak, orta boğum ve alttaki kum yığını.
+const hourglass = shape('g-hourglass', {
+  TL: [0, 0], TR: [8, 0], N: [4, 5], BL: [0, 10], BR: [8, 10], P1: [1.6, 10], P2: [6.4, 10], PA: [4, 7.6],
+}, [['TL', 'TR'], ['TR', 'N', [[7.2, 1.8], [5.2, 3.9]]], ['N', 'BR', [[5.2, 6.1], [7.2, 8.2]]], ['BR', 'P2'], ['P2', 'P1'], ['P1', 'BL'], ['P2', 'PA'], ['PA', 'P1'],
+  ['BL', 'N', mir(4, [[5.2, 6.1], [7.2, 8.2]]).reverse()], ['N', 'TL', mir(4, [[5.2, 3.9], [7.2, 1.8]])]]);
+
+// Kaktüs: gövde, iki kol, saksı.
+const cactus = shape('g-cactus', {
+  Bl: [3.8, 8.4], Br: [6.2, 8.4], S1: [3.8, 6.6], L1: [1.4, 6.6], L2: [1.4, 3.8], L3: [2.5, 3.8], L4: [2.5, 5.6], S2: [3.8, 5.6],
+  T1: [3.8, 1.4], T2: [6.2, 1.4], S3: [6.2, 4.4], R1: [7.6, 4.4], R2: [7.6, 2.6], R3: [8.7, 2.6], R4: [8.7, 5.4], S4: [6.2, 5.4],
+  PL: [2.6, 8.4], PR: [7.4, 8.4], Pb1: [3.4, 10.2], Pb2: [6.6, 10.2],
+}, [['Bl', 'S1'], ['S1', 'L1'], ['L1', 'L2'], ['L2', 'L3'], ['L3', 'L4'], ['L4', 'S2'], ['S2', 'T1'], ['T1', 'T2', [[4.3, 0.7], [5, 0.5], [5.7, 0.7]]], ['T2', 'S3'],
+  ['S3', 'R1'], ['R1', 'R2'], ['R2', 'R3'], ['R3', 'R4'], ['R4', 'S4'], ['S4', 'Br'], ['Bl', 'Br'],
+  ['PL', 'Bl'], ['Br', 'PR'], ['PL', 'Pb1'], ['Pb1', 'Pb2'], ['Pb2', 'PR']]);
+
+// Hediye kutusu: kutu, kapak, kurdele ve fiyonk.
+const gift = shape('g-gift', {
+  TL: [0, 2.4], Mt: [5, 2.4], TR: [10, 2.4], UR: [10, 4.6], Rt: [9.2, 4.6], BR: [9.2, 10], Bm: [5, 10], BL: [0.8, 10], Lt: [0.8, 4.6], UL: [0, 4.6],
+  p1: [3.4, 0.9], p2: [2.6, -0.5], q1: [6.6, 0.9], q2: [7.4, -0.5],
+}, [['TL', 'Mt'], ['Mt', 'TR'], ['TR', 'UR'], ['UR', 'Rt'], ['Rt', 'BR'], ['BR', 'Bm'], ['Bm', 'BL'], ['BL', 'Lt'], ['Lt', 'UL'], ['UL', 'TL'],
+  ['Mt', 'Bm'],
+  ['Mt', 'p1', [[4.1, 1.3]]], ['p1', 'p2', [[2.4, 0.5]]], ['p2', 'Mt', [[3.8, -0.1]]],
+  ['Mt', 'q1', [[5.9, 1.3]]], ['q1', 'q2', [[7.6, 0.5]]], ['q2', 'Mt', [[6.2, -0.1]]]]);
+
+// Lale: taç, sap ve iki yaprak.
+const tulip = shape('g-tulip', {
+  Lt: [1.6, 0.8], Lv: [3.3, 2.6], Mt: [5, 0], Rv: [6.7, 2.6], Rt: [8.4, 0.8], Bm: [5, 6.4],
+  Sg: [5, 8.0], Sb: [5, 10.4], Sg2: [5, 9.2],
+  a1: [7.6, 7.2], a2: [8.2, 8.8], b1: [2.4, 6.6], b2: [1.8, 8.2],
+}, [['Lt', 'Lv'], ['Lv', 'Mt'], ['Mt', 'Rv'], ['Rv', 'Rt'], ['Rt', 'Bm', [[8.5, 3.4], [7.0, 5.4]]], ['Bm', 'Lt', mir(5, [[8.5, 3.4], [7.0, 5.4]]).reverse()],
+  ['Bm', 'Sg'], ['Sg', 'Sg2'], ['Sg2', 'Sb'],
+  ['Sg', 'a1', [[6.3, 7.3]]], ['a1', 'a2', [[8.1, 8.0]]], ['a2', 'Sg2', [[6.6, 9.2]]],
+  ['Sg2', 'b2', [[3.2, 9.0]]], ['b2', 'b1', [[1.7, 7.4]]], ['b1', 'Sg', [[3.6, 7.2]]]]);
+
+// Ay ve yıldız: hilal ile ona bağlı beş köşeli yıldız.
+const starPts = (cx, cy, ro, ri) => { const o = {}; for (let k = 0; k < 5; k++) { o[`t${k}`] = pol(cx, cy, ro, -90 + 72 * k); o[`i${k}`] = pol(cx, cy, ri, -54 + 72 * k); } return o; };
+const moonStar = shape('g-moon', {
+  T: pol(5, 5, 4.8, -60), B: pol(5, 5, 4.8, 60), Mo: [0.2, 5], Mi: [3.95, 5],
+  ...starPts(8.0, 3.0, 1.6, 0.65),
+}, [['T', 'Mo', arc(5, 5, 4.8, [-90, -120, -150])], ['Mo', 'B', arc(5, 5, 4.8, [150, 120, 90])],
+  ['T', 'Mi', arc(8.2, 5, 4.25, [-130, -155])], ['Mi', 'B', arc(8.2, 5, 4.25, [155, 130])],
+  ...[0, 1, 2, 3, 4].flatMap((k) => [[`t${k}`, `i${k}`], [`i${k}`, `t${(k + 1) % 5}`]]),
+  ['T', 't4']]);
+
+// Her şekil puanına uygun kademeye yerleşir: [kademe, kademe içindeki göreli konum 0..1] (puanlara göre hesaplanmıştır).
+const PLACEMENT_EXTRA = {
+  'g-key': ['easy', 0.175], 'g-cloud': ['easy', 0.25],
+  'g-icecream': ['normal', 0.37], 'g-hourglass': ['normal', 0.44], 'g-bell': ['normal', 0.55],
+  'g-butterfly': ['hard', 0.21], 'g-moon': ['hard', 0.43], 'g-house': ['hard', 0.45], 'g-gift': ['hard', 0.47], 'g-tulip': ['hard', 0.51], 'g-ladybug': ['hard', 0.75], 'g-cactus': ['hard', 0.84],
+  'g-mushroom': ['expert', 0.133], 'g-sun': ['expert', 0.8],
+};
+const MORE_FIGURES = [house, key, butterfly, bell, mushroom, cloud, sun, iceCream, ladybug, hourglass, cactus, gift, tulip, moonStar]
+  .map((f) => ({ ...f, tier: PLACEMENT_EXTRA[f.id][0], slot: PLACEMENT_EXTRA[f.id][1] }));
 
 // ---- src/data/levels.js ----
 // OTOMATİK ÜRETİLDİ — elle düzenlemeyin. Kaynak: tools/generate-levels.mjs (tohum: linetra-pack-v1)
@@ -1474,8 +1644,26 @@ function levelToGraph(data) {
 
 
 
+
+/** Elle çizilmiş ek şekilleri kendi kademelerinin içine, `slot` (0..1) konumuna serpiştirir. */
+function weaveExtras(pack, extras) {
+  const out = [];
+  const tiers = [...new Set(pack.map((l) => l.tier))];
+  for (const tier of tiers) {
+    const block = pack.filter((l) => l.tier === tier);
+    const mine = extras.filter((e) => e.tier === tier).sort((a, b) => a.slot - b.slot);
+    let k = 0;
+    block.forEach((l, i) => {
+      while (k < mine.length && Math.round(mine[k].slot * block.length) <= i) out.push(mine[k++]);
+      out.push(l);
+    });
+    while (k < mine.length) out.push(mine[k++]);
+  }
+  return out;
+}
+
 class LevelCatalog {
-  constructor(levels = [...TUTORIAL_LEVELS, ...FIGURE_LEVELS, ...LEVEL_PACK]) {
+  constructor(levels = [...TUTORIAL_LEVELS, ...weaveExtras(LEVEL_PACK, [...FIGURE_LEVELS, ...MORE_FIGURES])]) {
     this.levels = levels;
     this._indexById = new Map(levels.map((l, i) => [l.id, i]));
     this.tiers = TIERS.map((tier) => {
